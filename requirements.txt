@@ -1,6 +1,10 @@
 fastapi
 uvicorn[standard]
-pydantic>=2.0
-pydantic-settings
-PyMuPDF
+pydantic
 python-multipart
+pypdf2
+spacy
+python-docx
+regex
+phonenumbers
+email-validator
