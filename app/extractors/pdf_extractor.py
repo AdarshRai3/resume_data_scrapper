@@ -21,7 +21,7 @@ class PDFExtractor:
             "experience_keywords": ["experience", "employment", "work", "job", "professional"],
             "skills_keywords": ["skills", "technical skills", "technologies", "competencies", "proficiencies"],
             "projects_keywords": ["projects", "technical projects", "academic projects", "personal projects"],
-            "achievements_keywords": ["achievements", "awards", "honors", "recognition", "certifications"],
+            "achievements_keywords": ["achievements", "awards", "honors", "recognition", "certifications", "accomplishments"],
         }
         self.common_skills = [
             "java", "python", "c++", "javascript", "typescript", "c#", "ruby", "go", "php", "swift", "kotlin", 
@@ -81,17 +81,23 @@ class PDFExtractor:
         }
         
         # Extract name (usually at the beginning of the resume)
-        name_rx = re.compile(r'^(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+|[A-Z]{2,}(?:\s+[A-Z]{2,})+)$', re.MULTILINE)
-        m = name_rx.search(text)
-        if m:
-            resume_data["name"] = m.group().title()
-        else:
-            # 2) Fallback: first 10 lines, look for Title Case
-            for line in text.splitlines()[:10]:
-                if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$', line.strip()):
-                    resume_data["name"] = line.strip()
+        # Look for name in first few lines
+        lines = text.splitlines()
+        for i, line in enumerate(lines[:5]):  # Check first 5 lines for name
+            line = line.strip()
+            if line and len(line) < 40:  # Names are typically short
+                # Pattern for first and last name with possible middle name/initial
+                if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+$', line):
+                    resume_data["name"] = line
                     break
-
+                # Pattern for ALL CAPS name
+                elif re.match(r'^[A-Z]{2,}(?:\s+[A-Z]{2,})+$', line):
+                    resume_data["name"] = line.title()  # Convert to title case
+                    break
+                # Fallback for other name formats
+                elif re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$', line):
+                    resume_data["name"] = line
+                    break
         
         # Extract email
         email_match = re.search(self.patterns["email"], text)
@@ -108,13 +114,10 @@ class PDFExtractor:
         phone_match = re.search(self.patterns["phone"], text)
         if phone_match:
             phone = phone_match.group()
-            # Try to parse and validate phone number
-            try:
-                phone_obj = phonenumbers.parse(phone, None)
-                if phonenumbers.is_valid_number(phone_obj):
-                    resume_data["phone"] = phone
-            except:
-                resume_data["phone"] = phone  # Use as-is if parsing fails
+            # Clean up phone number
+            phone = re.sub(r'[^0-9+]', '', phone)  # Remove non-digit and non-plus characters
+            if len(phone) >= 10:  # Ensure we have at least 10 digits
+                resume_data["phone"] = phone
         
         # Extract LinkedIn
         linkedin_match = re.search(self.patterns["linkedin"], text)
@@ -170,21 +173,27 @@ class PDFExtractor:
         section_headers = [
             "education", "experience", "work experience", "professional experience",
             "skills", "technical skills", "projects", "technical projects",
-            "achievements", "awards", "certifications", "publications",
-            "summary", "objective", "profile", "about"
+            "achievements", "awards", "honors", "certifications", "accomplishments",
+            "summary", "objective", "profile", "about", "interests", "activities",
+            "publications", "volunteer", "extracurricular"
         ]
         
         # Create regex pattern for section headers
-        pattern = r'(?i)^(?:' + '|'.join(section_headers) + r')(?:\s|:)'
+        pattern = r'(?i)(?:^|\n)(?:[ \t]*)((?:' + '|'.join(section_headers) + r')(?:\s*:|\s*$))'
         
         # Find potential section headers
         matches = list(re.finditer(pattern, text, re.MULTILINE))
+        
+        if not matches:
+            # Try a more lenient pattern if no headers found
+            pattern = r'(?i)(?:^|\n)(?:[ \t]*)((?:' + '|'.join(section_headers) + r')(?:\s*))(?=\n)'
+            matches = list(re.finditer(pattern, text, re.MULTILINE))
         
         # Split text by the found headers
         for i in range(len(matches)):
             start_idx = matches[i].start()
             end_idx = matches[i+1].start() if i < len(matches) - 1 else len(text)
-            section_name = text[matches[i].start():matches[i].end()].strip().lower().rstrip(':')
+            section_name = matches[i].group(1).strip().lower().rstrip(':')
             section_content = text[start_idx:end_idx].strip()
             sections[section_name] = section_content
         
@@ -215,18 +224,21 @@ class PDFExtractor:
                 
             edu = Education()
             
-            # Extract institution
-            institution_match = re.search(r'([A-Z][A-Za-z\s]+(?:University|College|Institute|School))', entry)
+            # Extract institution - remove "Education/" prefix if it exists
+            institution_match = re.search(r'([A-Z][A-Za-z\s,&]+(?:University|College|Institute|School|Academy))', entry)
             if institution_match:
-                edu.institution = institution_match.group(1).strip()
+                institution = institution_match.group(1).strip()
+                # Remove "Education/" prefix if it exists
+                institution = re.sub(r'^Education/\s*', '', institution)
+                edu.institution = institution
             
             # Extract location
             location_match = re.search(r'([A-Z][a-z]+(?:,\s*[A-Z][a-z]+)?)', entry)
-            if location_match and "University" not in location_match.group(1) and "College" not in location_match.group(1):
+            if location_match and not any(keyword in location_match.group(1) for keyword in ["University", "College", "Institute", "School", "Academy"]):
                 edu.location = location_match.group(1).strip()
             
             # Extract degree
-            degree_match = re.search(r'(Bachelor|Master|PhD|B\.Tech|M\.Tech|B\.E\.|M\.E\.|B\.S\.|M\.S\.)(?:\s+of\s+|\s+in\s+)?\s*([A-Za-z\s&]+)', entry, re.IGNORECASE)
+            degree_match = re.search(r'(Bachelor|Master|PhD|B\.Tech|M\.Tech|B\.E\.|M\.E\.|B\.S\.|M\.S\.|B\.A\.|M\.A\.)(?:\s+of\s+|\s+in\s+)?\s*([A-Za-z\s&]+)', entry, re.IGNORECASE)
             if degree_match:
                 prefix = degree_match.group(1)
                 field = degree_match.group(2) if degree_match.group(2) else ""
@@ -264,29 +276,34 @@ class PDFExtractor:
                 
             exp = Experience()
             
-            # Extract company name
-            company_match = re.search(r'([A-Z][A-Za-z0-9\s&]+)', entry)
+            # Extract company name - look for names that are likely companies
+            company_match = re.search(r'([A-Z][A-Za-z0-9\s&,.]+(?:Inc|LLC|Ltd|Corp|Corporation|Company|Technologies|Solutions|Systems|Group|Associates))', entry)
             if company_match:
                 exp.company = company_match.group(1).strip()
+            else:
+                # Fallback: look for words in all caps or title case at the beginning of entry
+                company_match = re.search(r'^([A-Z][A-Za-z0-9\s&,.]+)', entry)
+                if company_match:
+                    exp.company = company_match.group(1).strip()
             
             # Extract position
-            position_match = re.search(r'(Software|Senior|Junior|Full Stack|Backend|Frontend|Lead|Principal|Developer|Engineer|Intern|Manager|Director|Consultant)(?:\s+[A-Za-z]+)*', entry)
+            position_match = re.search(r'((?:Senior|Junior|Lead|Principal|Chief|Associate|Assistant|Staff|Technical|Software|Full Stack|Backend|Frontend|DevOps|Data|Cloud|Security|Network|Mobile|Web|UI/UX|QA|Test)(?:\s+[A-Za-z]+)*(?:\s+(?:Developer|Engineer|Architect|Manager|Director|Specialist|Analyst|Consultant|Intern|Administrator|Programmer|Designer|Scientist|Researcher)))', entry, re.IGNORECASE)
             if position_match:
-                exp.position = position_match.group(0).strip()
+                exp.position = position_match.group(1).strip()
             
             # Extract location
             location_match = re.search(r'([A-Z][a-z]+(?:,\s*[A-Z][a-z]+)?)', entry)
             if location_match and exp.company != location_match.group(1):
                 exp.location = location_match.group(1).strip()
             
-            # Extract period
-            period_match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?\s+\d{4}\s+(?:–|-|to)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Present)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?(?:\s+\d{4})?', entry, re.IGNORECASE)
+            # Extract period - improved pattern to capture various date formats
+            period_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?(?:\s+\d{4})|(?:\d{2}|\d{4}))(?:\s*(?:–|-|to|—|through)\s*)((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?(?:\s+\d{4})|(?:\d{2}|\d{4})|Present|Current)', entry, re.IGNORECASE)
             if period_match:
-                exp.period = period_match.group(0).strip()
+                exp.period = f"{period_match.group(1)} - {period_match.group(2)}"
             
             # Extract responsibilities (often bullet points)
             responsibilities = []
-            bullet_points = re.findall(r'(?:^|\n)(?:\s*[•∙■◦◘○◙-]\s*|\s*\d+\.\s*|\s*-\s*)(.+?)(?=\n|$)', entry)
+            bullet_points = re.findall(r'(?:^|\n)(?:\s*[•∙■◦◘○◙*-]\s*|\s*\d+\.\s*|\s*[▪▫]\s*)(.+?)(?=\n(?:\s*[•∙■◦◘○◙*-]\s*|\s*\d+\.\s*|\s*[▪▫]\s*)|$)', entry)
             if bullet_points:
                 responsibilities = [point.strip() for point in bullet_points if point.strip()]
             
@@ -323,7 +340,7 @@ class PDFExtractor:
         skill_lists = re.findall(r'(?:skills|technologies)(?::|include|are)?\s*(.+?)(?=\n\n|\n[A-Z]|$)', text, re.IGNORECASE)
         for skill_list in skill_lists:
             # Split by commas or bullet points
-            individual_skills = re.split(r',|\s*[•∙■◦◘○◙-]\s*', skill_list)
+            individual_skills = re.split(r',|\s*[•∙■◦◘○◙*-]\s*', skill_list)
             for skill in individual_skills:
                 skill = skill.strip()
                 if skill and len(skill) > 1:  # Avoid single characters
@@ -335,7 +352,7 @@ class PDFExtractor:
         """Extract projects information"""
         projects_list = []
         
-        # Split by project pattern (usually starts with project name)
+        # Split by empty lines or project headers to get different project entries
         project_entries = re.split(r'\n\s*\n', text)
         
         for entry in project_entries:
@@ -344,23 +361,28 @@ class PDFExtractor:
                 
             project = Project()
             
-            # Extract project name
-            name_match = re.search(r'([A-Z][A-Za-z0-9\s&\-]+)(?:\||–|-|\n)', entry)
+            # Extract project name - look for a title at the beginning of the entry
+            name_match = re.search(r'^([A-Z][A-Za-z0-9\s&\-:]+)', entry.strip())
             if name_match:
                 project.name = name_match.group(1).strip()
+            else:
+                # Fallback: look for capitalized words that might be a project name
+                name_match = re.search(r'([A-Z][A-Za-z0-9\s&\-:]+)(?:\||–|-|\n)', entry)
+                if name_match:
+                    project.name = name_match.group(1).strip()
             
             # Extract technologies
-            tech_match = re.search(r'(?:Technologies|Tech Stack|Built with)(?::|\s*–\s*|\s*-\s*)?\s*(.+?)(?=\n|$)', entry, re.IGNORECASE)
+            tech_match = re.search(r'(?:Technologies|Tech Stack|Built with|Tools Used|Stack)(?::|\s*–\s*|\s*-\s*)?\s*(.+?)(?=\n|$)', entry, re.IGNORECASE)
             if tech_match:
-                tech_list = tech_match.group(1).split(',')
-                project.technologies = [tech.strip() for tech in tech_list]
+                tech_list = re.split(r',|\s*[•∙■◦◘○◙*-]\s*', tech_match.group(1))
+                project.technologies = [tech.strip() for tech in tech_list if tech.strip()]
             else:
                 # Try to find technologies enclosed in brackets
                 bracket_tech = re.search(r'\[(.*?)\]|\((.*?)\)', entry)
                 if bracket_tech:
                     tech_group = bracket_tech.group(1) if bracket_tech.group(1) else bracket_tech.group(2)
-                    tech_list = tech_group.split(',')
-                    project.technologies = [tech.strip() for tech in tech_list]
+                    tech_list = re.split(r',|\s*[•∙■◦◘○◙*-]\s*', tech_group)
+                    project.technologies = [tech.strip() for tech in tech_list if tech.strip()]
             
             # Extract date
             date_match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?\s+\d{4}', entry, re.IGNORECASE)
@@ -372,17 +394,21 @@ class PDFExtractor:
                 if year_match:
                     project.date = year_match.group(1)
             
-            # Extract descriptions (usually bullet points)
+            # Extract descriptions (bullet points or lines that follow the project name)
             descriptions = []
-            bullet_points = re.findall(r'(?:^|\n)(?:\s*[•∙■◦◘○◙*]\s*|\s*\d+\.\s*|\s*-\s*)(.+?)(?=\n|$)', entry)
+            bullet_points = re.findall(r'(?:^|\n)(?:\s*[•∙■◦◘○◙*-]\s*|\s*\d+\.\s*|\s*[▪▫]\s*)(.+?)(?=\n(?:\s*[•∙■◦◘○◙*-]\s*|\s*\d+\.\s*|\s*[▪▫]\s*)|$)', entry)
             if bullet_points:
                 descriptions = [point.strip() for point in bullet_points if point.strip()]
             
             # If no bullet points found, try to extract sentences that might be descriptions
             if not descriptions:
-                sentences = re.findall(r'(?:^|\n)\s*([A-Z][\w\s,;:\'".()-]+?\.)\s*(?=\n|$)', entry)
-                if sentences:
-                    descriptions = [sentence.strip() for sentence in sentences if sentence.strip()]
+                # Skip the first line if it contains the project name
+                lines = entry.strip().split('\n')
+                if len(lines) > 1:
+                    desc_text = '\n'.join(lines[1:])
+                    sentences = re.findall(r'([A-Z][\w\s,;:\'".()-]+?\.)\s*(?=\n|$)', desc_text)
+                    if sentences:
+                        descriptions = [sentence.strip() for sentence in sentences if sentence.strip()]
             
             project.description = descriptions
             
@@ -395,16 +421,30 @@ class PDFExtractor:
         """Extract achievements"""
         achievements = []
         
-        # Look for bullet points or numbered items
-        bullet_points = re.findall(r'(?:^|\n)(?:\s*[•∙■◦◘○◙*]\s*|\s*\d+\.\s*|\s*-\s*)(.+?)(?=\n|$)', text)
+        # Look for bullet points, numbered items or special characters
+        bullet_points = re.findall(r'(?:^|\n)(?:\s*[•∙■◦◘○◙*-]\s*|\s*\d+[.)]\s*|\s*[▪▫]\s*)(.+?)(?=\n(?:\s*[•∙■◦◘○◙*-]\s*|\s*\d+[.)]\s*|\s*[▪▫]\s*)|$)', text)
         if bullet_points:
             achievements = [point.strip() for point in bullet_points if point.strip()]
         
         # If no bullet points found, try to extract sentences
         if not achievements:
-            sentences = re.findall(r'(?:^|\n)\s*([A-Z][\w\s,;:\'".()-]+?\.)\s*(?=\n|$)', text)
-            if sentences:
-                achievements = [sentence.strip() for sentence in sentences if sentence.strip()]
+            # Skip the first line if it's the section header
+            lines = text.strip().split('\n')
+            if len(lines) > 1 and any(keyword in lines[0].lower() for keyword in self.patterns["achievements_keywords"]):
+                desc_text = '\n'.join(lines[1:])
+                sentences = re.findall(r'([A-Z][\w\s,;:\'".()-]+?\.)\s*(?=\n|$)', desc_text)
+                if sentences:
+                    achievements = [sentence.strip() for sentence in sentences if sentence.strip()]
+            else:
+                sentences = re.findall(r'([A-Z][\w\s,;:\'".()-]+?\.)\s*(?=\n|$)', text)
+                if sentences:
+                    achievements = [sentence.strip() for sentence in sentences if sentence.strip()]
+        
+        # If still no achievements found, try to extract any non-empty lines
+        if not achievements:
+            lines = text.strip().split('\n')
+            if len(lines) > 1:  # Skip the header
+                achievements = [line.strip() for line in lines[1:] if line.strip()]
         
         return achievements
     
